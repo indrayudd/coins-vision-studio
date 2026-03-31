@@ -36,12 +36,12 @@ def get_image_paths(dataset_root: Path, split: str = "all") -> list[Path]:
         raise FileNotFoundError(f"Dataset directory does not exist: {dataset_root}")
 
     # grab all image files we can find and pray sorting keeps stuff stable
-    found_stuff_paths = [p for p in dataset_root.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS]
+    all_image_candidates = [p for p in dataset_root.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS]
     if split == "all":
-        return sorted(found_stuff_paths)
+        return sorted(all_image_candidates)
 
-    split_weird_lower = split.lower()
-    return sorted([p for p in found_stuff_paths if p.parent.name.lower() == split_weird_lower])
+    split_key = split.lower()
+    return sorted([p for p in all_image_candidates if p.parent.name.lower() == split_key])
 
 
 def _to_uint8(image: np.ndarray) -> np.ndarray:
@@ -56,17 +56,17 @@ def _to_uint8(image: np.ndarray) -> np.ndarray:
 
 def _encode_image(image: np.ndarray) -> str:
     """Encode ndarray image as browser-safe base64 JPEG data URL."""
-    img_u8_thing = _to_uint8(image)
-    if img_u8_thing.ndim == 2:
-        img_u8_thing = np.stack([img_u8_thing] * 3, axis=-1)
-    if img_u8_thing.shape[2] == 4:
-        img_u8_thing = img_u8_thing[:, :, :3]
+    frame_u8 = _to_uint8(image)
+    if frame_u8.ndim == 2:
+        frame_u8 = np.stack([frame_u8] * 3, axis=-1)
+    if frame_u8.shape[2] == 4:
+        frame_u8 = frame_u8[:, :, :3]
 
-    pil_thing = Image.fromarray(img_u8_thing, mode="RGB")
-    tiny_buf_thing = io.BytesIO()
-    pil_thing.save(tiny_buf_thing, format="JPEG", quality=92)
-    encoded_thing = base64.b64encode(tiny_buf_thing.getvalue()).decode("utf-8")
-    return f"data:image/jpeg;base64,{encoded_thing}"
+    pil_frame = Image.fromarray(frame_u8, mode="RGB")
+    jpeg_buffer = io.BytesIO()
+    pil_frame.save(jpeg_buffer, format="JPEG", quality=92)
+    encoded_payload = base64.b64encode(jpeg_buffer.getvalue()).decode("utf-8")
+    return f"data:image/jpeg;base64,{encoded_payload}"
 
 
 def _load_image(path: Path, max_dim: int = 900) -> np.ndarray:
@@ -74,10 +74,10 @@ def _load_image(path: Path, max_dim: int = 900) -> np.ndarray:
     # loading + resize guard for giant phone photos
     with Image.open(path) as img:
         img = img.convert("RGB")
-        width_thing, height_thing = img.size
-        resize_ratio_thing = min(1.0, max_dim / float(max(width_thing, height_thing)))
-        if resize_ratio_thing < 1.0:
-            img = img.resize((int(width_thing * resize_ratio_thing), int(height_thing * resize_ratio_thing)), Image.Resampling.LANCZOS)
+        src_w, src_h = img.size
+        resize_gain = min(1.0, max_dim / float(max(src_w, src_h)))
+        if resize_gain < 1.0:
+            img = img.resize((int(src_w * resize_gain), int(src_h * resize_gain)), Image.Resampling.LANCZOS)
         return np.asarray(img)
 
 
@@ -669,242 +669,242 @@ def _detect_circles(
     # the monster function: everything plus the kitchen sink.
     bgr = cv2.cvtColor(rgb_uint8, cv2.COLOR_RGB2BGR)
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-    deglared_thing_gray, glare_mask_thing, glare_fraction_thing = _deglare_gray(rgb_uint8, gray)
-    illumish_gray = _illumination_normalize(deglared_thing_gray)
-    clahe_weird = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(8, 8)).apply(illumish_gray)
-    fft_low_thing = _fft_low_pass(clahe_weird, cutoff_ratio=0.11)
-    bilateral_smooth_thing = cv2.bilateralFilter(clahe_weird, d=9, sigmaColor=48, sigmaSpace=48)
-    low_pass_mix = cv2.addWeighted(bilateral_smooth_thing, 0.60, fft_low_thing, 0.40, 0)
+    deglared_gray, glare_mask, glare_ratio = _deglare_gray(rgb_uint8, gray)
+    illum_gray = _illumination_normalize(deglared_gray)
+    clahe_frame = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(8, 8)).apply(illum_gray)
+    fft_smooth = _fft_low_pass(clahe_frame, cutoff_ratio=0.11)
+    bilateral_smooth = cv2.bilateralFilter(clahe_frame, d=9, sigmaColor=48, sigmaSpace=48)
+    low_pass_mix = cv2.addWeighted(bilateral_smooth, 0.60, fft_smooth, 0.40, 0)
     low_pass_mix = cv2.GaussianBlur(low_pass_mix, (9, 9), 2.2)
-    blurred_mid = cv2.medianBlur(low_pass_mix, 7)
-    line_suppressed_thing, line_mask_thing, line_fraction_thing = _suppress_long_lines(blurred_mid)
+    denoise_gray = cv2.medianBlur(low_pass_mix, 7)
+    line_clean_gray, line_mask, line_ratio = _suppress_long_lines(denoise_gray)
 
     # adaptive canny thresholds from grad quantiles.
-    grad_x = cv2.Sobel(line_suppressed_thing, cv2.CV_32F, 1, 0, ksize=3)
-    grad_y = cv2.Sobel(line_suppressed_thing, cv2.CV_32F, 0, 1, ksize=3)
+    grad_x = cv2.Sobel(line_clean_gray, cv2.CV_32F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(line_clean_gray, cv2.CV_32F, 0, 1, ksize=3)
     grad_mag = cv2.magnitude(grad_x, grad_y)
     p58 = float(np.quantile(grad_mag, 0.58))
     p86 = float(np.quantile(grad_mag, 0.86))
-    canny_low_thing = max(16, int(0.82 * p58))
-    canny_high_thing = max(canny_low_thing + 18, int(1.08 * p86))
-    edges_thing = cv2.Canny(line_suppressed_thing, threshold1=canny_low_thing, threshold2=canny_high_thing)
-    edges_thing[line_mask_thing > 0] = 0
+    canny_low = max(16, int(0.82 * p58))
+    canny_high = max(canny_low + 18, int(1.08 * p86))
+    edge_map = cv2.Canny(line_clean_gray, threshold1=canny_low, threshold2=canny_high)
+    edge_map[line_mask > 0] = 0
 
-    mask_input_thing = cv2.addWeighted(low_pass_mix, 0.56, line_suppressed_thing, 0.44, 0.0)
-    mask_thing, contour_areas_thing, _rough_radius_thing = _mask_from_intensity(mask_input_thing)
-    consensus_mask_thing = mask_thing.copy()
-    initial_mask_fraction_thing = float(np.mean(mask_thing > 0))
-    if initial_mask_fraction_thing < 0.34:
-        aux_mask_thing = _aux_hsv_coin_mask(rgb_uint8)
-        merged_mask_thing = cv2.bitwise_or(mask_thing, aux_mask_thing)
-        merged_mask_thing = cv2.morphologyEx(merged_mask_thing, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8), iterations=1)
-        merged_mask_thing = cv2.morphologyEx(merged_mask_thing, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8), iterations=1)
-        merged_fraction_thing = float(np.mean(merged_mask_thing > 0))
-        if merged_fraction_thing <= 0.66 and merged_fraction_thing > initial_mask_fraction_thing + 0.03:
-            consensus_mask_thing = merged_mask_thing
-        if merged_fraction_thing <= 0.62 and merged_fraction_thing > initial_mask_fraction_thing + 0.04:
-            mask_thing = merged_mask_thing
-            contours_thing, _ = cv2.findContours(mask_thing, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            contour_areas_thing = [float(cv2.contourArea(c)) for c in contours_thing if cv2.contourArea(c) > 120]
+    mask_seed = cv2.addWeighted(low_pass_mix, 0.56, line_clean_gray, 0.44, 0.0)
+    fg_mask, contour_areas, _rough_radius_est = _mask_from_intensity(mask_seed)
+    consensus_mask = fg_mask.copy()
+    initial_fg_ratio = float(np.mean(fg_mask > 0))
+    if initial_fg_ratio < 0.34:
+        aux_hsv_mask = _aux_hsv_coin_mask(rgb_uint8)
+        merged_fg_mask = cv2.bitwise_or(fg_mask, aux_hsv_mask)
+        merged_fg_mask = cv2.morphologyEx(merged_fg_mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8), iterations=1)
+        merged_fg_mask = cv2.morphologyEx(merged_fg_mask, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8), iterations=1)
+        merged_fg_ratio = float(np.mean(merged_fg_mask > 0))
+        if merged_fg_ratio <= 0.66 and merged_fg_ratio > initial_fg_ratio + 0.03:
+            consensus_mask = merged_fg_mask
+        if merged_fg_ratio <= 0.62 and merged_fg_ratio > initial_fg_ratio + 0.04:
+            fg_mask = merged_fg_mask
+            contours_local, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            contour_areas = [float(cv2.contourArea(c)) for c in contours_local if cv2.contourArea(c) > 120]
     closeup_mode = False
 
-    min_dim_thing = min(mask_thing.shape[0], mask_thing.shape[1])
-    min_radius_thing, max_radius_thing, median_radius_thing = _estimate_radius_band(mask_thing, contour_areas_thing, min_dim_thing)
-    watershed_labels_thing = _watershed_regions(mask_thing, min_radius=min_radius_thing)
-    min_dist_thing = max(12, int(0.58 * median_radius_thing))
-    param1_thing = 140
-    param2_thing = 56
-    mask_fraction_thing = float(np.mean(mask_thing > 0))
-    if mask_fraction_thing > 0.45 and line_fraction_thing < 0.02:
-        min_dist_thing = max(min_dist_thing, int(0.72 * median_radius_thing))
-        param2_thing = min(88, param2_thing + 6)
-        hough_base_thing = cv2.GaussianBlur(line_suppressed_thing, (13, 13), 3.6)
+    frame_min_dim = min(fg_mask.shape[0], fg_mask.shape[1])
+    radius_min, radius_max, radius_mid = _estimate_radius_band(fg_mask, contour_areas, frame_min_dim)
+    region_labels = _watershed_regions(fg_mask, min_radius=radius_min)
+    minimum_dis = max(12, int(0.58 * radius_mid))
+    hough_edge_gate = 140
+    hough_vote_gate = 56
+    fg_ratio = float(np.mean(fg_mask > 0))
+    if fg_ratio > 0.45 and line_ratio < 0.02:
+        minimum_dis = max(minimum_dis, int(0.72 * radius_mid))
+        hough_vote_gate = min(88, hough_vote_gate + 6)
+        hough_input = cv2.GaussianBlur(line_clean_gray, (13, 13), 3.6)
     else:
-        hough_base_thing = line_suppressed_thing
+        hough_input = line_clean_gray
 
-    pass_specs_thing = [
-        (hough_base_thing, 1.20, min_dist_thing, param1_thing, param2_thing, min_radius_thing, max_radius_thing, 1.00),
+    hough_pass_plan = [
+        (hough_input, 1.20, minimum_dis, hough_edge_gate, hough_vote_gate, radius_min, radius_max, 1.00),
         (
             low_pass_mix,
             1.25,
-            max(12, int(min_dist_thing * 0.82)),
-            max(90, int(param1_thing * 0.88)),
-            max(24, int(param2_thing * 0.84)),
-            max(7, int(min_radius_thing * 0.86)),
-            max(min_radius_thing + 10, int(max_radius_thing * 1.28)),
+            max(12, int(minimum_dis * 0.82)),
+            max(90, int(hough_edge_gate * 0.88)),
+            max(24, int(hough_vote_gate * 0.84)),
+            max(7, int(radius_min * 0.86)),
+            max(radius_min + 10, int(radius_max * 1.28)),
             0.85,
         ),
         (
-            line_suppressed_thing,
+            line_clean_gray,
             1.30,
-            max(12, int(min_dist_thing * 0.74)),
-            min(180, int(param1_thing * 1.06)),
-            min(96, int(param2_thing * 1.08)),
-            max(8, int(min_radius_thing * 0.90)),
-            max(min_radius_thing + 10, int(max_radius_thing * 1.20)),
+            max(12, int(minimum_dis * 0.74)),
+            min(180, int(hough_edge_gate * 1.06)),
+            min(96, int(hough_vote_gate * 1.08)),
+            max(8, int(radius_min * 0.90)),
+            max(radius_min + 10, int(radius_max * 1.20)),
             0.70,
         ),
     ]
 
-    circle_guesses_thing: list[tuple[float, float, float, float]] = []
-    for work_thing, dp_thing, dist_thing, p1_thing, p2_thing, r_min_thing, r_max_thing, weight_thing in pass_specs_thing:
+    circle_proposals: list[tuple[float, float, float, float]] = []
+    for work_img, dp_cfg, dis_cfg, p1_cfg, p2_cfg, r_min_cfg, r_max_cfg, pass_weight in hough_pass_plan:
         circles = _run_hough_pass(
-            work_thing,
-            dp=dp_thing,
-            min_dist=dist_thing,
-            param1=p1_thing,
-            param2=p2_thing,
-            min_radius=r_min_thing,
-            max_radius=r_max_thing,
+            work_img,
+            dp=dp_cfg,
+            min_dist=dis_cfg,
+            param1=p1_cfg,
+            param2=p2_cfg,
+            min_radius=r_min_cfg,
+            max_radius=r_max_cfg,
         )
         for x, y, r in circles:
-            circle_guesses_thing.append((float(x), float(y), float(r), float(weight_thing)))
+            circle_proposals.append((float(x), float(y), float(r), float(pass_weight)))
 
     # tiny-coin rescue pass at bigger scale (similar spirit to scale-space ideas).
-    upscale_thing = 1.34
-    upscaled_thing = cv2.resize(hough_base_thing, None, fx=upscale_thing, fy=upscale_thing, interpolation=cv2.INTER_CUBIC)
+    rescue_scale = 1.34
+    upscaled_input = cv2.resize(hough_input, None, fx=rescue_scale, fy=rescue_scale, interpolation=cv2.INTER_CUBIC)
     upscaled_circles = _run_hough_pass(
-        upscaled_thing,
+        upscaled_input,
         dp=1.25,
-        min_dist=max(12, int(min_dist_thing * upscale_thing * 0.78)),
-        param1=max(92, int(param1_thing * 0.84)),
-        param2=max(20, int(param2_thing * 0.72)),
-        min_radius=max(8, int(min_radius_thing * upscale_thing * 0.90)),
-        max_radius=max(10, int(max_radius_thing * upscale_thing * 1.18)),
+        min_dist=max(12, int(minimum_dis * rescue_scale * 0.78)),
+        param1=max(92, int(hough_edge_gate * 0.84)),
+        param2=max(20, int(hough_vote_gate * 0.72)),
+        min_radius=max(8, int(radius_min * rescue_scale * 0.90)),
+        max_radius=max(10, int(radius_max * rescue_scale * 1.18)),
     )
     for x, y, r in upscaled_circles:
-        circle_guesses_thing.append((float(x / upscale_thing), float(y / upscale_thing), float(r / upscale_thing), 0.68))
+        circle_proposals.append((float(x / rescue_scale), float(y / rescue_scale), float(r / rescue_scale), 0.68))
 
-    region_candidates_thing = _region_hough_candidates(
-        line_suppressed_thing,
-        labels=watershed_labels_thing,
-        min_radius=min_radius_thing,
-        max_radius=max_radius_thing,
+    region_proposals = _region_hough_candidates(
+        line_clean_gray,
+        labels=region_labels,
+        min_radius=radius_min,
+        max_radius=radius_max,
     )
-    circle_guesses_thing.extend(region_candidates_thing)
+    circle_proposals.extend(region_proposals)
 
-    if not closeup_mode and len(circle_guesses_thing) < 12:
-        rescue_specs_thing = [
+    if not closeup_mode and len(circle_proposals) < 12:
+        rescue_pass_plan = [
             (
                 low_pass_mix,
                 1.25,
-                max(10, int(min_dist_thing * 0.76)),
-                max(90, int(param1_thing * 0.84)),
-                max(24, int(param2_thing * 0.62)),
-                max(7, int(min_radius_thing * 0.82)),
-                max(min_radius_thing + 10, int(max_radius_thing * 1.35)),
+                max(10, int(minimum_dis * 0.76)),
+                max(90, int(hough_edge_gate * 0.84)),
+                max(24, int(hough_vote_gate * 0.62)),
+                max(7, int(radius_min * 0.82)),
+                max(radius_min + 10, int(radius_max * 1.35)),
                 0.55,
             ),
             (
-                hough_base_thing,
+                hough_input,
                 1.30,
-                max(10, int(min_dist_thing * 0.64)),
-                max(86, int(param1_thing * 0.80)),
-                max(20, int(param2_thing * 0.54)),
-                max(7, int(min_radius_thing * 0.78)),
-                max(min_radius_thing + 10, int(max_radius_thing * 1.42)),
+                max(10, int(minimum_dis * 0.64)),
+                max(86, int(hough_edge_gate * 0.80)),
+                max(20, int(hough_vote_gate * 0.54)),
+                max(7, int(radius_min * 0.78)),
+                max(radius_min + 10, int(radius_max * 1.42)),
                 0.45,
             ),
         ]
 
-        for work_thing, dp_thing, dist_thing, p1_thing, p2_thing, r_min_thing, r_max_thing, weight_thing in rescue_specs_thing:
+        for work_img, dp_cfg, dis_cfg, p1_cfg, p2_cfg, r_min_cfg, r_max_cfg, pass_weight in rescue_pass_plan:
             circles = _run_hough_pass(
-                work_thing,
-                dp=dp_thing,
-                min_dist=dist_thing,
-                param1=p1_thing,
-                param2=p2_thing,
-                min_radius=r_min_thing,
-                max_radius=r_max_thing,
+                work_img,
+                dp=dp_cfg,
+                min_dist=dis_cfg,
+                param1=p1_cfg,
+                param2=p2_cfg,
+                min_radius=r_min_cfg,
+                max_radius=r_max_cfg,
             )
             for x, y, r in circles:
-                circle_guesses_thing.append((float(x), float(y), float(r), float(weight_thing)))
+                circle_proposals.append((float(x), float(y), float(r), float(pass_weight)))
 
     # quick gate so nonsense circles don't flood consensus.
-    filtered_guesses_thing: list[tuple[float, float, float, float]] = []
-    support_gate_thing = 0.07 if glare_fraction_thing > 0.010 else 0.08
-    if mask_fraction_thing < 0.30:
-        support_gate_thing = min(support_gate_thing, 0.06)
-    for x, y, r, weight in circle_guesses_thing:
-        if r < 0.78 * min_radius_thing or r > 1.38 * max_radius_thing:
+    filtered_proposals: list[tuple[float, float, float, float]] = []
+    support_floor = 0.07 if glare_ratio > 0.010 else 0.08
+    if fg_ratio < 0.30:
+        support_floor = min(support_floor, 0.06)
+    for x, y, r, weight in circle_proposals:
+        if r < 0.78 * radius_min or r > 1.38 * radius_max:
             continue
-        support = _circle_edge_support(edges_thing, x, y, r, samples=132)
-        if support < support_gate_thing:
+        support = _circle_edge_support(edge_map, x, y, r, samples=132)
+        if support < support_floor:
             continue
-        filtered_guesses_thing.append((x, y, r, float(weight + 0.16 * support)))
+        filtered_proposals.append((x, y, r, float(weight + 0.16 * support)))
 
-    circle_guesses_thing = filtered_guesses_thing
-    texture_energy_thing = float(np.mean(np.abs(cv2.Laplacian(line_suppressed_thing, cv2.CV_32F))) / 255.0)
-    dog_added_thing = 0
-    if len(circle_guesses_thing) < 10 and texture_energy_thing < 0.24:
-        dog_rescue = _dog_blob_candidates(line_suppressed_thing, mask_thing, min_radius=min_radius_thing, max_radius=max_radius_thing)
+    circle_proposals = filtered_proposals
+    texture_score = float(np.mean(np.abs(cv2.Laplacian(line_clean_gray, cv2.CV_32F))) / 255.0)
+    dog_added_count = 0
+    if len(circle_proposals) < 10 and texture_score < 0.24:
+        dog_rescue = _dog_blob_candidates(line_clean_gray, fg_mask, min_radius=radius_min, max_radius=radius_max)
         for x, y, r, weight in dog_rescue:
-            support = _circle_edge_support(edges_thing, x, y, r, samples=120)
+            support = _circle_edge_support(edge_map, x, y, r, samples=120)
             if support < 0.11:
                 continue
-            circle_guesses_thing.append((x, y, r, float(weight + 0.14 * support)))
-            dog_added_thing += 1
+            circle_proposals.append((x, y, r, float(weight + 0.14 * support)))
+            dog_added_count += 1
 
-    min_valid_radius_thing = float(max(5, int(0.66 * min_radius_thing)))
-    max_valid_radius_thing = float(max_radius_thing if not closeup_mode else int(0.56 * min_dim_thing))
-    relaxed_mode_thing = (
-        (mask_fraction_thing > 0.68 and len(circle_guesses_thing) > 36 and line_fraction_thing < 0.02)
-        or line_fraction_thing > 0.015
-        or glare_fraction_thing > 0.010
-        or (mask_fraction_thing < 0.32 and len(circle_guesses_thing) >= 60)
-        or (min_radius_thing <= 10 and len(circle_guesses_thing) >= 70)
+    valid_radius_min = float(max(5, int(0.66 * radius_min)))
+    valid_radius_max = float(radius_max if not closeup_mode else int(0.56 * frame_min_dim))
+    relaxed_mode = (
+        (fg_ratio > 0.68 and len(circle_proposals) > 36 and line_ratio < 0.02)
+        or line_ratio > 0.015
+        or glare_ratio > 0.010
+        or (fg_ratio < 0.32 and len(circle_proposals) >= 60)
+        or (radius_min <= 10 and len(circle_proposals) >= 70)
     )
-    detected_thing = _consensus_circles(
-        circle_guesses_thing,
-        gray=line_suppressed_thing,
-        edges=edges_thing,
-        mask=consensus_mask_thing,
+    final_circles = _consensus_circles(
+        circle_proposals,
+        gray=line_clean_gray,
+        edges=edge_map,
+        mask=consensus_mask,
         closeup_mode=closeup_mode,
-        min_valid_radius=min_valid_radius_thing,
-        max_valid_radius=max_valid_radius_thing,
-        relaxed_mode=relaxed_mode_thing,
+        min_valid_radius=valid_radius_min,
+        max_valid_radius=valid_radius_max,
+        relaxed_mode=relaxed_mode,
     )
 
-    expected_from_guesses_thing = int(round(len(circle_guesses_thing) / 3.35))
-    rescue_gap_thing = max(0, expected_from_guesses_thing - len(detected_thing))
-    rescue_risk_mode_thing = (
-        line_fraction_thing > 0.012
-        or glare_fraction_thing > 0.010
-        or mask_fraction_thing < 0.30
-        or min_radius_thing <= 10
+    expected_from_proposals = int(round(len(circle_proposals) / 3.35))
+    rescue_gap = max(0, expected_from_proposals - len(final_circles))
+    rescue_risk_mode = (
+        line_ratio > 0.012
+        or glare_ratio > 0.010
+        or fg_ratio < 0.30
+        or radius_min <= 10
     )
-    rescue_limit_thing = 0
-    if rescue_gap_thing >= 2 and rescue_risk_mode_thing:
-        rescue_limit_thing = min(6, max(2, rescue_gap_thing // 2))
-    component_rescued_thing = _component_rescue_circles(
-        mask_thing,
-        edges=edges_thing,
-        min_radius=min_radius_thing,
-        max_radius=max_radius_thing,
-        existing=detected_thing,
-        max_new=rescue_limit_thing,
+    rescue_limit = 0
+    if rescue_gap >= 2 and rescue_risk_mode:
+        rescue_limit = min(6, max(2, rescue_gap // 2))
+    rescued_components = _component_rescue_circles(
+        fg_mask,
+        edges=edge_map,
+        min_radius=radius_min,
+        max_radius=radius_max,
+        existing=final_circles,
+        max_new=rescue_limit,
     )
-    if component_rescued_thing:
-        detected_thing = _dedupe_circles([*detected_thing, *component_rescued_thing])
+    if rescued_components:
+        final_circles = _dedupe_circles([*final_circles, *rescued_components])
 
-    params_thing = {
-        "canny_low_threshold": float(canny_low_thing),
-        "canny_high_threshold": float(canny_high_thing),
-        "hough_min_radius": float(min_radius_thing),
-        "hough_max_radius": float(max_radius_thing),
-        "hough_min_dist": float(min_dist_thing),
-        "hough_param2": float(param2_thing),
+    debug_params = {
+        "canny_low_threshold": float(canny_low),
+        "canny_high_threshold": float(canny_high),
+        "hough_min_radius": float(radius_min),
+        "hough_max_radius": float(radius_max),
+        "hough_min_dist": float(minimum_dis),
+        "hough_param2": float(hough_vote_gate),
         "closeup_mode": float(1.0 if closeup_mode else 0.0),
-        "hough_pass_candidates": float(len(circle_guesses_thing)),
-        "foreground_fraction": mask_fraction_thing,
-        "line_artifact_fraction": line_fraction_thing,
-        "glare_fraction": glare_fraction_thing,
-        "texture_energy": texture_energy_thing,
-        "dog_fallback_candidates": float(dog_added_thing),
-        "region_proposals": float(len(region_candidates_thing)),
-        "component_rescued": float(len(component_rescued_thing)),
+        "hough_pass_candidates": float(len(circle_proposals)),
+        "foreground_fraction": fg_ratio,
+        "line_artifact_fraction": line_ratio,
+        "glare_fraction": glare_ratio,
+        "texture_energy": texture_score,
+        "dog_fallback_candidates": float(dog_added_count),
+        "region_proposals": float(len(region_proposals)),
+        "component_rescued": float(len(rescued_components)),
     }
-    return detected_thing, params_thing, gray, clahe_weird, low_pass_mix, line_suppressed_thing, edges_thing, mask_thing, glare_mask_thing
+    return final_circles, debug_params, gray, clahe_frame, low_pass_mix, line_clean_gray, edge_map, fg_mask, glare_mask
 
 
 def _mask_overlay(rgb_uint8: np.ndarray, mask: np.ndarray) -> np.ndarray:
@@ -920,16 +920,16 @@ def run_coin_pipeline(image_path: Path) -> dict[str, Any]:
     """Run complete pipeline on one image and package all intermediate stages."""
     # top-level runner the API calls for each image.
     rgb_uint8 = _load_image(image_path)
-    detected_thing, params_thing, gray_thing, clahe_thing, low_pass_thing, line_suppressed_thing, edges_thing, mask_thing, glare_mask_thing = _detect_circles(rgb_uint8)
+    final_circles, debug_params, gray_frame, clahe_frame, low_pass_frame, line_clean_frame, edge_frame, fg_mask, glare_mask = _detect_circles(rgb_uint8)
 
-    overlay_thing = rgb_uint8.copy()
-    for x, y, r in detected_thing:
-        cv2.circle(overlay_thing, (x, y), r, (72, 236, 142), 2)
-        cv2.circle(overlay_thing, (x, y), max(2, r // 12), (255, 90, 90), -1)
+    overlay_frame = rgb_uint8.copy()
+    for x, y, r in final_circles:
+        cv2.circle(overlay_frame, (x, y), r, (72, 236, 142), 2)
+        cv2.circle(overlay_frame, (x, y), max(2, r // 12), (255, 90, 90), -1)
 
-    mask_border_thing = _mask_overlay(rgb_uint8, mask_thing)
+    mask_outline_frame = _mask_overlay(rgb_uint8, fg_mask)
 
-    step_images_thing = [
+    step_images = [
         {
             "id": "original",
             "title": "Original Frame",
@@ -940,68 +940,68 @@ def run_coin_pipeline(image_path: Path) -> dict[str, Any]:
             "id": "grayscale",
             "title": "Grayscale Projection",
             "description": "RGB image converted to grayscale for classical edge and circle operations.",
-            "image": _encode_image(gray_thing.astype(np.float32) / 255.0),
+            "image": _encode_image(gray_frame.astype(np.float32) / 255.0),
         },
         {
             "id": "contrast",
             "title": "CLAHE Contrast Boost",
             "description": "Local contrast enhancement to make coin boundaries stand out in uneven lighting.",
-            "image": _encode_image(clahe_thing.astype(np.float32) / 255.0),
+            "image": _encode_image(clahe_frame.astype(np.float32) / 255.0),
         },
         {
             "id": "deglare",
             "title": "Specular Suppression",
             "description": "Bright low-saturation glare highlights are inpainted to recover missing coin rim edges.",
-            "image": _encode_image(glare_mask_thing.astype(np.float32) / 255.0),
+            "image": _encode_image(glare_mask.astype(np.float32) / 255.0),
         },
         {
             "id": "lowpass",
             "title": "Low-Pass Filtering",
             "description": "Bilateral + Gaussian smoothing suppresses high-frequency background artifacts before edge extraction.",
-            "image": _encode_image(low_pass_thing.astype(np.float32) / 255.0),
+            "image": _encode_image(low_pass_frame.astype(np.float32) / 255.0),
         },
         {
             "id": "line_suppress",
             "title": "Line-Artifact Suppression",
             "description": "Long linear textures are inpainted to avoid stripe and weave backgrounds dominating circle votes.",
-            "image": _encode_image(line_suppressed_thing.astype(np.float32) / 255.0),
+            "image": _encode_image(line_clean_frame.astype(np.float32) / 255.0),
         },
         {
             "id": "edges",
             "title": "Canny Edge Map",
             "description": "Adaptive Canny edge extraction from image gradient statistics.",
-            "image": _encode_image(edges_thing.astype(np.float32) / 255.0),
+            "image": _encode_image(edge_frame.astype(np.float32) / 255.0),
         },
         {
             "id": "mask",
             "title": "Foreground Segmentation",
             "description": "Otsu-based foreground mask isolates coin-like regions before circle search.",
-            "image": _encode_image(mask_thing.astype(np.float32) / 255.0),
+            "image": _encode_image(fg_mask.astype(np.float32) / 255.0),
         },
         {
             "id": "watershed",
             "title": "Region Boundary View",
             "description": "Foreground component boundaries used to set stable circle search scale.",
-            "image": _encode_image(mask_border_thing),
+            "image": _encode_image(mask_outline_frame),
         },
         {
             "id": "hough",
             "title": "Final Circle Detections",
             "description": "Hough circles with geometric dedupe to avoid repeated detections on the same coin.",
-            "image": _encode_image(overlay_thing),
+            "image": _encode_image(overlay_frame),
         },
     ]
 
     return {
-        "coin_count": len(detected_thing),
-        "steps": step_images_thing,
+        "coin_count": len(final_circles),
+        "steps": step_images,
         "parameters": {
-            **params_thing,
+            **debug_params,
             "candidate_counts": {
                 "watershed": 0,
-                "hough": len(detected_thing),
-                "total": len(detected_thing),
-                "final": len(detected_thing),
+                "hough": len(final_circles),
+                "total": len(final_circles),
+                "final": len(final_circles),
             },
         },
     }
@@ -1011,25 +1011,25 @@ def estimate_coin_count(image_path: Path) -> int:
     """Fast count-only wrapper used by evaluation jobs."""
     # minimal wrapper for scripts.
     rgb_uint8 = _load_image(image_path)
-    detected_thing, *_ = _detect_circles(rgb_uint8)
-    return len(detected_thing)
+    final_circles, *_ = _detect_circles(rgb_uint8)
+    return len(final_circles)
 
 
 def draw_and_process(dataset_root: Path, split: str = "all", seed: int | None = None) -> dict[str, Any]:
     """Sample one image from split, process it, and attach metadata fields."""
     # draw exactly one random sample and process it.
-    images_thing = get_image_paths(dataset_root=dataset_root, split=split)
-    if not images_thing:
+    image_pool = get_image_paths(dataset_root=dataset_root, split=split)
+    if not image_pool:
         raise ValueError(f"No images found in split '{split}' under {dataset_root}")
 
-    rng_thing = random.Random(seed)
-    chosen_thing = rng_thing.choice(images_thing)
+    rng_box = random.Random(seed)
+    chosen_image = rng_box.choice(image_pool)
 
-    result_thing = run_coin_pipeline(chosen_thing)
-    result_thing["image_path"] = str(chosen_thing.relative_to(dataset_root.parent))
-    result_thing["split"] = split
-    result_thing["seed"] = seed
-    return result_thing
+    draw_result = run_coin_pipeline(chosen_image)
+    draw_result["image_path"] = str(chosen_image.relative_to(dataset_root.parent))
+    draw_result["split"] = split
+    draw_result["seed"] = seed
+    return draw_result
 
 
 def draw_many_and_process(
@@ -1041,25 +1041,25 @@ def draw_many_and_process(
 ) -> list[dict[str, Any]]:
     """Sample many images from split and run pipeline for each one."""
     # same thing but for a batch.
-    images_thing = get_image_paths(dataset_root=dataset_root, split=split)
-    if not images_thing:
+    image_pool = get_image_paths(dataset_root=dataset_root, split=split)
+    if not image_pool:
         raise ValueError(f"No images found in split '{split}' under {dataset_root}")
     if count <= 0:
         raise ValueError("Count must be positive.")
 
-    rng_thing = random.Random(seed)
-    if count >= len(images_thing):
-        chosen_thing = images_thing.copy()
-        rng_thing.shuffle(chosen_thing)
-        chosen_thing = chosen_thing[:count]
+    rng_box = random.Random(seed)
+    if count >= len(image_pool):
+        chosen_batch = image_pool.copy()
+        rng_box.shuffle(chosen_batch)
+        chosen_batch = chosen_batch[:count]
     else:
-        chosen_thing = rng_thing.sample(images_thing, count)
+        chosen_batch = rng_box.sample(image_pool, count)
 
-    results_thing: list[dict[str, Any]] = []
-    for idx_thing, path_thing in enumerate(chosen_thing):
-        result_thing = run_coin_pipeline(path_thing)
-        result_thing["image_path"] = str(path_thing.relative_to(dataset_root.parent))
-        result_thing["split"] = split
-        result_thing["seed"] = None if seed is None else seed + idx_thing
-        results_thing.append(result_thing)
-    return results_thing
+    batch_results: list[dict[str, Any]] = []
+    for sample_idx, image_path in enumerate(chosen_batch):
+        draw_result = run_coin_pipeline(image_path)
+        draw_result["image_path"] = str(image_path.relative_to(dataset_root.parent))
+        draw_result["split"] = split
+        draw_result["seed"] = None if seed is None else seed + sample_idx
+        batch_results.append(draw_result)
+    return batch_results
